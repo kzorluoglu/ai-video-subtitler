@@ -10,50 +10,42 @@ export default defineConfig({
     outDir: 'dist',
     assetsDir: 'assets',
     sourcemap: false,
-    minify: false, // Disable minification to avoid terser issues
+    minify: 'esbuild',
     rollupOptions: {
       output: {
         manualChunks: {
           'vendor': ['vue'],
-          'ffmpeg': ['@ffmpeg/ffmpeg', '@ffmpeg/util'],
           'transformers': ['@xenova/transformers']
         }
       }
     },
-    chunkSizeWarningLimit: 5000 // Increase limit for AI models
+    chunkSizeWarningLimit: 3000
   },
   
   // Development server
   server: {
     host: true,
-    port: 5173,
-    headers: {
-      'Cross-Origin-Opener-Policy': 'same-origin',
-      'Cross-Origin-Embedder-Policy': 'require-corp'
-    }
+    port: 5173
   },
   
-  // Preview server (for production testing)
+  // Preview server
   preview: {
     host: true,
-    port: 4173,
-    headers: {
-      'Cross-Origin-Opener-Policy': 'same-origin',
-      'Cross-Origin-Embedder-Policy': 'require-corp'
-    }
+    port: 4173
   },
   
   // Optimize dependencies
   optimizeDeps: {
-    exclude: ['@ffmpeg/ffmpeg', '@ffmpeg/util'],
-    include: ['vue']
+    include: ['vue', '@xenova/transformers']
   },
   
-  // Base URL for deployment
-  base: './',
+  // Important: Set base to '/' for proper model loading
+  base: '/',
   
   // Define global constants
   define: {
-    __APP_VERSION__: JSON.stringify('1.0.0')
+    __APP_VERSION__: JSON.stringify('1.0.0'),
+    // Ensure transformers uses correct CDN
+    'process.env.NODE_ENV': JSON.stringify('production')
   }
 })

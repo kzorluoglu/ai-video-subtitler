@@ -2,7 +2,7 @@
 
 Generate accurate, human-readable subtitles for your videos using OpenAI's Whisper AI model. Fast, free, and runs entirely in your browser.
 
-![AI Video Subtitler Screenshot](./screenshot.png)
+![AI Video Subtitler Screenshot](docs/screen.png)
 
 ## ✨ Features
 

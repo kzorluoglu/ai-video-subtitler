@@ -1,12 +1,20 @@
 <script setup>
 import { ref, onMounted, computed } from 'vue';
-import { FFmpeg } from '@ffmpeg/ffmpeg';
-import { fetchFile, toBlobURL } from '@ffmpeg/util';
 import { pipeline, env } from '@xenova/transformers';
 
-// Configure transformers
+// Configure transformers to use Hugging Face CDN properly
 env.allowRemoteModels = true;
+env.allowLocalModels = false;
 env.silent = true;
+
+// Explicitly set the remote URL and disable local caching that might cause issues
+env.remoteURL = 'https://huggingface.co/';
+env.remotePathTemplate = '{model}/resolve/main/';
+
+// Ensure ONNX runtime loads from CDN
+if (typeof window !== 'undefined') {
+  window.env = env;
+}
 
 // State
 const videoFile = ref(null);
@@ -36,58 +44,18 @@ const availableLanguages = ref([
   { code: 'ru', name: 'Russian' }
 ]);
 
-// FFmpeg setup
-const ffmpeg = new FFmpeg();
-let isFFmpegLoaded = ref(false);
-
-// Try multiple CDN sources for better reliability
-const ffmpegCDNs = [
-  'https://cdn.jsdelivr.net/npm/@ffmpeg/core-mt@0.12.9/dist/esm',
-  'https://unpkg.com/@ffmpeg/core-mt@0.12.9/dist/esm',
-  'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd'
-];
-
-onMounted(async () => {
-  let loadSuccess = false;
-  
-  for (const baseURL of ffmpegCDNs) {
-    try {
-      processingStatus.value = `Loading FFmpeg from ${baseURL.includes('jsdelivr') ? 'jsDelivr' : baseURL.includes('unpkg') ? 'unpkg' : 'CDN'}...`;
-      
-      await ffmpeg.load({
-        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-        wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
-        workerURL: await toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript')
-      });
-      
-      isFFmpegLoaded.value = true;
-      processingStatus.value = 'Ready - FFmpeg loaded successfully';
-      loadSuccess = true;
-      break;
-    } catch (error) {
-      console.warn(`Failed to load FFmpeg from ${baseURL}:`, error);
-      continue;
-    }
-  }
-  
-  if (!loadSuccess) {
-    console.error('All FFmpeg CDNs failed');
-    processingStatus.value = 'FFmpeg failed to load - using direct audio processing';
-    isFFmpegLoaded.value = false;
-  }
-});
-
-// Read audio properly for Whisper
-const readAudioData = async (audioBlob) => {
+// Read audio properly for Whisper using Web Audio API
+const readAudioData = async (audioSource) => {
   const audioContext = new (window.AudioContext || window.webkitAudioContext)({ sampleRate: 16000 });
   try {
-    const arrayBuffer = await audioBlob.arrayBuffer();
+    const arrayBuffer = await audioSource.arrayBuffer();
     const audioBuffer = await audioContext.decodeAudioData(arrayBuffer);
     const audioData = audioBuffer.getChannelData(0);
     
     if (audioBuffer.sampleRate === 16000) {
       return new Float32Array(audioData);
     } else {
+      // Resample to 16kHz
       const ratio = audioBuffer.sampleRate / 16000;
       const newLength = Math.round(audioData.length / ratio);
       const result = new Float32Array(newLength);
@@ -108,9 +76,10 @@ const handleFileChange = (event) => {
   videoFile.value = file;
   videoSrc.value = URL.createObjectURL(file);
   subtitles.value = [];
+  processingStatus.value = 'Video loaded - ready to generate subtitles';
 };
 
-// Process video
+// Process video - simplified without FFmpeg
 const processVideo = async () => {
   if (!videoFile.value) return;
   
@@ -118,36 +87,37 @@ const processVideo = async () => {
     isProcessing.value = true;
     subtitles.value = [];
     
-    let audioBlob;
+    // Use video file directly (modern browsers can extract audio)
+    processingStatus.value = 'Processing video audio...';
+    const audioData = await readAudioData(videoFile.value);
     
-    if (isFFmpegLoaded.value) {
-      try {
-        // Extract audio using FFmpeg
-        processingStatus.value = 'Extracting audio with FFmpeg...';
-        await ffmpeg.writeFile('input.mp4', await fetchFile(videoFile.value));
-        await ffmpeg.exec(['-i', 'input.mp4', '-vn', '-ar', '16000', '-ac', '1', '-f', 'wav', 'output.wav']);
-        const data = await ffmpeg.readFile('output.wav');
-        audioBlob = new Blob([data.buffer], { type: 'audio/wav' });
-      } catch (ffmpegError) {
-        console.warn('FFmpeg processing failed, using direct processing:', ffmpegError);
-        processingStatus.value = 'FFmpeg failed, using direct audio processing...';
-        audioBlob = videoFile.value;
-      }
-    } else {
-      // Use video file directly (browsers can extract audio)
-      processingStatus.value = 'Using direct audio processing...';
-      audioBlob = videoFile.value;
+    // Load and run Whisper model with error handling
+    processingStatus.value = `Loading ${selectedModel.value.split('/')[1]} model from Hugging Face...`;
+    
+    let transcriber;
+    try {
+      transcriber = await pipeline('automatic-speech-recognition', selectedModel.value, {
+        quantized: true,
+        progress_callback: (progress) => {
+          if (progress.status === 'downloading') {
+            const percent = Math.round((progress.loaded / progress.total) * 100);
+            processingStatus.value = `Downloading model: ${percent}%`;
+          } else if (progress.status === 'loading') {
+            processingStatus.value = 'Loading AI model into browser...';
+          }
+        }
+      });
+    } catch (modelError) {
+      console.warn(`Failed to load ${selectedModel.value}, trying whisper-tiny:`, modelError);
+      processingStatus.value = 'Primary model failed, loading backup model...';
+      transcriber = await pipeline('automatic-speech-recognition', 'Xenova/whisper-tiny', {
+        quantized: true
+      });
     }
     
-    // Convert audio for Whisper
-    processingStatus.value = 'Converting audio for AI processing...';
-    const audioData = await readAudioData(audioBlob);
-    
-    // Transcribe
     processingStatus.value = 'AI is transcribing your video (this may take a minute)...';
-    const transcriber = await pipeline('automatic-speech-recognition', selectedModel.value);
     const result = await transcriber(audioData, {
-      chunk_length_s: 30,  // Longer chunks for natural speech
+      chunk_length_s: 30,
       stride_length_s: 5,
       return_timestamps: true,
       language: 'english',
@@ -172,12 +142,11 @@ const processVideo = async () => {
           currentText = text;
           currentEnd = chunk.timestamp[1];
         } else {
-          // Add to current subtitle if it's a continuation
           currentText += ' ' + text;
           currentEnd = chunk.timestamp[1];
         }
         
-        // Create subtitle when we hit natural breaks or max length
+        // Create subtitle when we hit natural breaks
         const shouldBreak = 
           text.match(/[.!?]$/) ||  // Sentence ending
           currentText.length > 100 || // Too long
@@ -196,17 +165,16 @@ const processVideo = async () => {
         }
       }
     } else if (result.text) {
-      // Split by natural sentence boundaries
+      // Handle single text result
       const text = result.text.trim();
       const sentences = text.split(/(?<=[.!?])\s+/).filter(s => s.trim());
       const duration = audioData.length / 16000;
       
       if (sentences.length > 1) {
         let currentTime = 0;
-        sentences.forEach((sentence, i) => {
-          // Estimate timing based on sentence length relative to total text
+        sentences.forEach((sentence) => {
           const sentenceRatio = sentence.length / text.length;
-          const sentenceDuration = Math.max(2, duration * sentenceRatio); // Min 2 seconds
+          const sentenceDuration = Math.max(2, duration * sentenceRatio);
           
           finalSubtitles.push({
             start: currentTime,
@@ -217,9 +185,9 @@ const processVideo = async () => {
           currentTime += sentenceDuration;
         });
       } else {
-        // Single long text - split into readable chunks
+        // Split long text into readable chunks
         const words = text.split(' ');
-        const wordsPerChunk = 12; // ~12 words per subtitle for readability
+        const wordsPerChunk = 12;
         const timePerWord = duration / words.length;
         
         for (let i = 0; i < words.length; i += wordsPerChunk) {
@@ -236,22 +204,19 @@ const processVideo = async () => {
       }
     }
     
-    // Clean up and validate subtitles
+    // Clean and validate subtitles
     subtitles.value = finalSubtitles
-      .filter(sub => sub.text.length > 3) // Remove very short text
+      .filter(sub => sub.text.length > 3)
       .map(sub => ({
         ...sub,
-        text: sub.text.replace(/\s+/g, ' ').trim() // Clean whitespace
+        text: sub.text.replace(/\s+/g, ' ').trim()
       }));
     
-    const statusMessage = isFFmpegLoaded.value 
-      ? `Generated ${subtitles.value.length} readable subtitles with FFmpeg`
-      : `Generated ${subtitles.value.length} readable subtitles (direct processing)`;
-    processingStatus.value = statusMessage;
+    processingStatus.value = `✅ Generated ${subtitles.value.length} readable subtitles`;
     
   } catch (error) {
     console.error('Processing error:', error);
-    processingStatus.value = `Error: ${error.message}`;
+    processingStatus.value = `❌ Error: ${error.message}`;
   } finally {
     isProcessing.value = false;
   }
@@ -310,6 +275,10 @@ const jumpToSubtitle = (startTime) => {
     videoElement.value.currentTime = startTime;
   }
 };
+
+onMounted(() => {
+  processingStatus.value = 'Ready - No FFmpeg needed, works on all browsers!';
+});
 </script>
 
 <template>
@@ -317,7 +286,7 @@ const jumpToSubtitle = (startTime) => {
     <!-- Header -->
     <header class="header">
       <h1>🎬 AI Video Subtitler</h1>
-      <p>Generate accurate subtitles using AI</p>
+      <p>Generate accurate subtitles using AI - Works on all browsers!</p>
     </header>
 
     <!-- Top toolbar -->
@@ -369,14 +338,27 @@ const jumpToSubtitle = (startTime) => {
           </div>
         </div>
         <div v-else class="video-placeholder">
-          Select a video file to get started
+          <div class="placeholder-content">
+            <h2>🎥 Upload Your Video</h2>
+            <p>Select a video file to generate AI subtitles</p>
+            <ul class="feature-list">
+              <li>✅ Works without FFmpeg</li>
+              <li>✅ Runs entirely in your browser</li>
+              <li>✅ No server upload required</li>
+              <li>✅ Privacy-friendly</li>
+            </ul>
+          </div>
         </div>
       </div>
 
       <!-- Subtitles side -->
       <div class="subtitles-side">
         <h3>Subtitles ({{ subtitles.length }})</h3>
-        <div class="subtitles-list">
+        <div v-if="subtitles.length === 0" class="empty-state">
+          <p>No subtitles yet</p>
+          <p class="hint">Upload a video and click "Generate Subtitles"</p>
+        </div>
+        <div v-else class="subtitles-list">
           <div 
             v-for="(subtitle, index) in subtitles" 
             :key="index"
@@ -534,8 +516,7 @@ body {
 }
 
 .video-placeholder {
-  color: #666;
-  font-size: 18px;
+  color: #333;
   text-align: center;
   background: #f5f5f5;
   height: 100%;
@@ -543,6 +524,30 @@ body {
   align-items: center;
   justify-content: center;
   border-radius: 8px;
+}
+
+.placeholder-content h2 {
+  font-size: 24px;
+  margin-bottom: 12px;
+  color: #1976d2;
+}
+
+.placeholder-content p {
+  font-size: 16px;
+  margin-bottom: 20px;
+  color: #666;
+}
+
+.feature-list {
+  list-style: none;
+  text-align: left;
+  display: inline-block;
+}
+
+.feature-list li {
+  font-size: 14px;
+  margin: 8px 0;
+  color: #555;
 }
 
 .subtitle-overlay {
@@ -572,6 +577,21 @@ body {
   border-bottom: 1px solid #e0e0e0;
   font-size: 16px;
   color: #333;
+}
+
+.empty-state {
+  padding: 40px 20px;
+  text-align: center;
+  color: #666;
+}
+
+.empty-state p {
+  margin: 8px 0;
+}
+
+.hint {
+  font-size: 14px;
+  color: #999;
 }
 
 .subtitles-list {
