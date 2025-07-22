@@ -1,0 +1,15 @@
+/*
+  Cross-Origin-Opener-Policy: same-origin
+  Cross-Origin-Embedder-Policy: require-corp
+  X-Frame-Options: DENY
+  X-Content-Type-Options: nosniff
+
+/*.wasm
+  Content-Type: application/wasm
+  Cross-Origin-Resource-Sharing: *
+
+/*.js
+  Content-Type: application/javascript
+
+/*.html
+  Content-Type: text/html; charset=utf-8

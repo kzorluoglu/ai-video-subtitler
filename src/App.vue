@@ -38,20 +38,42 @@ const availableLanguages = ref([
 
 // FFmpeg setup
 const ffmpeg = new FFmpeg();
-const baseURL = 'https://cdn.jsdelivr.net/npm/@ffmpeg/core-mt@0.12.9/dist/esm';
 let isFFmpegLoaded = ref(false);
 
+// Try multiple CDN sources for better reliability
+const ffmpegCDNs = [
+  'https://cdn.jsdelivr.net/npm/@ffmpeg/core-mt@0.12.9/dist/esm',
+  'https://unpkg.com/@ffmpeg/core-mt@0.12.9/dist/esm',
+  'https://cdn.jsdelivr.net/npm/@ffmpeg/core@0.12.6/dist/umd'
+];
+
 onMounted(async () => {
-  try {
-    await ffmpeg.load({
-      coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
-      wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
-      workerURL: await toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript')
-    });
-    isFFmpegLoaded.value = true;
-    processingStatus.value = 'Ready';
-  } catch (error) {
-    processingStatus.value = 'FFmpeg failed to load';
+  let loadSuccess = false;
+  
+  for (const baseURL of ffmpegCDNs) {
+    try {
+      processingStatus.value = `Loading FFmpeg from ${baseURL.includes('jsdelivr') ? 'jsDelivr' : baseURL.includes('unpkg') ? 'unpkg' : 'CDN'}...`;
+      
+      await ffmpeg.load({
+        coreURL: await toBlobURL(`${baseURL}/ffmpeg-core.js`, 'text/javascript'),
+        wasmURL: await toBlobURL(`${baseURL}/ffmpeg-core.wasm`, 'application/wasm'),
+        workerURL: await toBlobURL(`${baseURL}/ffmpeg-core.worker.js`, 'text/javascript')
+      });
+      
+      isFFmpegLoaded.value = true;
+      processingStatus.value = 'Ready - FFmpeg loaded successfully';
+      loadSuccess = true;
+      break;
+    } catch (error) {
+      console.warn(`Failed to load FFmpeg from ${baseURL}:`, error);
+      continue;
+    }
+  }
+  
+  if (!loadSuccess) {
+    console.error('All FFmpeg CDNs failed');
+    processingStatus.value = 'FFmpeg failed to load - using direct audio processing';
+    isFFmpegLoaded.value = false;
   }
 });
 
@@ -96,19 +118,33 @@ const processVideo = async () => {
     isProcessing.value = true;
     subtitles.value = [];
     
-    // Extract audio
-    processingStatus.value = 'Extracting audio...';
-    await ffmpeg.writeFile('input.mp4', await fetchFile(videoFile.value));
-    await ffmpeg.exec(['-i', 'input.mp4', '-vn', '-ar', '16000', '-ac', '1', '-f', 'wav', 'output.wav']);
-    const data = await ffmpeg.readFile('output.wav');
-    const audioBlob = new Blob([data.buffer], { type: 'audio/wav' });
+    let audioBlob;
+    
+    if (isFFmpegLoaded.value) {
+      try {
+        // Extract audio using FFmpeg
+        processingStatus.value = 'Extracting audio with FFmpeg...';
+        await ffmpeg.writeFile('input.mp4', await fetchFile(videoFile.value));
+        await ffmpeg.exec(['-i', 'input.mp4', '-vn', '-ar', '16000', '-ac', '1', '-f', 'wav', 'output.wav']);
+        const data = await ffmpeg.readFile('output.wav');
+        audioBlob = new Blob([data.buffer], { type: 'audio/wav' });
+      } catch (ffmpegError) {
+        console.warn('FFmpeg processing failed, using direct processing:', ffmpegError);
+        processingStatus.value = 'FFmpeg failed, using direct audio processing...';
+        audioBlob = videoFile.value;
+      }
+    } else {
+      // Use video file directly (browsers can extract audio)
+      processingStatus.value = 'Using direct audio processing...';
+      audioBlob = videoFile.value;
+    }
     
     // Convert audio for Whisper
-    processingStatus.value = 'Converting audio...';
+    processingStatus.value = 'Converting audio for AI processing...';
     const audioData = await readAudioData(audioBlob);
     
     // Transcribe
-    processingStatus.value = 'Transcribing...';
+    processingStatus.value = 'AI is transcribing your video (this may take a minute)...';
     const transcriber = await pipeline('automatic-speech-recognition', selectedModel.value);
     const result = await transcriber(audioData, {
       chunk_length_s: 30,  // Longer chunks for natural speech
@@ -208,8 +244,13 @@ const processVideo = async () => {
         text: sub.text.replace(/\s+/g, ' ').trim() // Clean whitespace
       }));
     
-    processingStatus.value = `Generated ${subtitles.value.length} readable subtitles`;
+    const statusMessage = isFFmpegLoaded.value 
+      ? `Generated ${subtitles.value.length} readable subtitles with FFmpeg`
+      : `Generated ${subtitles.value.length} readable subtitles (direct processing)`;
+    processingStatus.value = statusMessage;
+    
   } catch (error) {
+    console.error('Processing error:', error);
     processingStatus.value = `Error: ${error.message}`;
   } finally {
     isProcessing.value = false;
