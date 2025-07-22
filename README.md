@@ -17,7 +17,7 @@ Generate accurate, human-readable subtitles for your videos using OpenAI's Whisp
 ## 🚀 Quick Start
 
 ### Online Version
-Visit [https://d8devs.com/ai-video-subtitler.html](https://d8devs.com/ai-video-subtitler.html) to use the app immediately.
+Visit [https://d8devs.com/ai-video-subtitler](https://d8devs.com/ai-video-subtitler) to use the app immediately.
 
 ### Local Development
 

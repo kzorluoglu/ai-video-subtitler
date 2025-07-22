@@ -10,7 +10,7 @@ export default defineConfig({
     outDir: 'dist',
     assetsDir: 'assets',
     sourcemap: false,
-    minify: 'terser',
+    minify: false, // Disable minification to avoid terser issues
     rollupOptions: {
       output: {
         manualChunks: {
@@ -20,7 +20,7 @@ export default defineConfig({
         }
       }
     },
-    chunkSizeWarningLimit: 3000 // Increase limit for AI models
+    chunkSizeWarningLimit: 5000 // Increase limit for AI models
   },
   
   // Development server
@@ -54,6 +54,6 @@ export default defineConfig({
   
   // Define global constants
   define: {
-    __APP_VERSION__: JSON.stringify(process.env.npm_package_version || '1.0.0')
+    __APP_VERSION__: JSON.stringify('1.0.0')
   }
 })
